@@ -17,7 +17,6 @@ func main() {
 	for {
 		chunk, err := file.Read(buffer)
 		if err != nil {
-			log.Fatal("error reading file")
 			break
 		}
 		fmt.Printf("read: %s\n", string(buffer[:chunk]))
