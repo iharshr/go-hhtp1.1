@@ -12,66 +12,95 @@ func getLinesChannel(f io.ReadCloser) <-chan string {
 	out := make(chan string, 1)
 
 	go func() {
+		defer f.Close()
+		defer close(out)
 
 		buffer := make([]byte, 8)
 		var parts string
 
 		for {
-			f, err := f.Read(buffer)
-			// handeling end of file here
+			n, err := f.Read(buffer)
+
+			// Handle end of file
 			if err == io.EOF {
+				// Send any remaining content as the last line
 				if parts != "" {
-					out <- string(buffer[:f])
+					// Remove trailing \r if present
+					line := strings.TrimRight(parts, "\r")
+					if line != "" {
+						out <- line
+					}
 				}
 				break
 			}
-			// store the 8 bites here
-			chunk := string(buffer[:f])
-			// add to line buffer
-			// this line buffer is of length till \n
+
+			if err != nil {
+				log.Printf("Read error: %v", err)
+				break
+			}
+
+			// Store the bytes read
+			chunk := string(buffer[:n])
 			parts += chunk
 
+			// Process complete lines
 			for {
-				new_line_index := strings.Index(parts, "\n")
-				if new_line_index == -1 {
-					// this means no new line
-					// we are still reading
-					// so break from this loop
+				// Look for \r\n (HTTP standard) or just \n (fallback)
+				crlfIndex := strings.Index(parts, "\r\n")
+				lfIndex := strings.Index(parts, "\n")
+
+				var lineEndIndex int
+				var lineEndLength int
+
+				if crlfIndex != -1 && (lfIndex == -1 || crlfIndex <= lfIndex) {
+					// Found \r\n
+					lineEndIndex = crlfIndex
+					lineEndLength = 2
+				} else if lfIndex != -1 {
+					// Found \n only
+					lineEndIndex = lfIndex
+					lineEndLength = 1
+				} else {
+					// No line ending found
 					break
 				}
 
-				current_line := parts[:new_line_index]
-				out <- string(current_line)
+				currentLine := parts[:lineEndIndex]
+				if currentLine != "" { // Only send non-empty lines
+					out <- currentLine
+				}
 
-				// clear buffer for new line
-				// so we can read next line
-				parts = parts[new_line_index+1:]
+				// Remove processed line from buffer
+				parts = parts[lineEndIndex+lineEndLength:]
 			}
-
 		}
-
-		defer f.Close()
-		defer close(out)
 	}()
+
 	return out
 }
 
 func main() {
-	listner, err := net.Listen("tcp", ":42069")
+	listener, err := net.Listen("tcp", ":42069")
 	if err != nil {
-		log.Fatalf("error while reading messages.txt , err :: %s", err)
+		log.Fatalf("error while creating listener, err :: %s", err)
 	}
+	defer listener.Close()
 
 	for {
-		conn, err := listner.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
-			log.Fatal("error", "error", err)
+			log.Printf("Accept error: %v", err)
+			continue
 		}
 
-		lines := getLinesChannel(conn)
-		for line := range lines {
-			fmt.Printf("read: %s\n", line)
-		}
+		// Handle each connection in a goroutine for better concurrency
+		go func(c net.Conn) {
+			defer c.Close()
+
+			lines := getLinesChannel(c)
+			for line := range lines {
+				fmt.Printf("read: %s\n", line)
+			}
+		}(conn)
 	}
-
 }
